@@ -13,6 +13,30 @@ client = OpenAI(
 
 TARGET_FOLDER = "./test_folder"
 
+
+def show_plan(plan):
+    """按可读格式打印当前整理方案"""
+    print("\n✨ 当前整理方案：")
+    for rel_filepath, target_dir_name in plan.items():
+        print(f"📄 [{rel_filepath}] -> 📁 [{target_dir_name}]")
+
+
+def normalize_plan(files, proposed_plan, fallback_plan=None):
+    """确保计划覆盖全部文件；缺失项沿用旧计划或标记为未分类"""
+    fallback_plan = fallback_plan or {}
+    normalized = {}
+
+    for rel_path in files:
+        target_dir = proposed_plan.get(rel_path)
+        if isinstance(target_dir, str) and target_dir.strip():
+            normalized[rel_path] = target_dir.strip()
+        elif rel_path in fallback_plan:
+            normalized[rel_path] = fallback_plan[rel_path]
+        else:
+            normalized[rel_path] = "未分类"
+
+    return normalized
+
 def get_files_recursive(folder_path):
     """📂 核心升级：递归读取文件夹及所有子目录下的文件"""
     if not os.path.exists(folder_path):
@@ -32,36 +56,111 @@ def get_files_recursive(folder_path):
             
     return file_list
 
-def ask_llm_for_plan(file_list):
-    """将包含相对路径的文件列表发给 GLM-5"""
+def ask_llm_for_plan(file_list, current_plan, user_instruction):
+    """支持多轮对话：按用户追加要求不断优化整理计划"""
     prompt = f"""
-    你是一个专业的电脑文件夹整理助手。请将以下文件列表进行分类。
-    注意：输入的文件名可能包含子目录路径（如 "子文件夹/测试.c"）。
-    
-    请严格以 JSON 格式返回。
-    键(Key)是原始的相对路径，值(Value)是你为它规划的【目标根文件夹名称】。
-    
-    例如输入: ["第1章.docx", "src/main.c", "图片/图纸1.png"]
-    返回: {{"第1章.docx": "文档与报告", "src/main.c": "C语言代码", "图片/图纸1.png": "机械图纸"}}
-    
-    待分类的文件列表如下：
-    {file_list}
-    """
+你是一个专业的电脑文件夹整理助手。
 
-    print("🧠 GLM-5 正在分析全局文件结构，请稍候...")
+我会给你：
+1) 全量文件相对路径列表
+2) 当前整理计划（相对路径 -> 目标根文件夹）
+3) 用户本轮追加要求
+
+请你根据用户要求调整计划，并严格返回 JSON 对象，格式如下：
+{{
+  "assistant_reply": "给用户的简短中文说明（1~3句）",
+  "plan": {{"文件相对路径": "目标根文件夹", "...": "..."}}
+}}
+
+硬性要求：
+- plan 必须尽量覆盖所有输入文件路径；不要虚构不存在的文件
+- 每个 value 必须是目标根文件夹名称（不要写完整路径）
+- 只输出 JSON，不要输出 Markdown
+
+文件列表：
+{file_list}
+
+当前计划：
+{json.dumps(current_plan, ensure_ascii=False)}
+
+用户本轮要求：
+{user_instruction}
+"""
+
+    print("🧠 GLM-5 正在根据你的新要求优化方案...")
     response = client.chat.completions.create(
         model="glm-5",
         messages=[
             {"role": "system", "content": "你是一个只输出 JSON 格式的机器助手。"},
             {"role": "user", "content": prompt}
         ],
-        response_format={"type": "json_object"} 
+        response_format={"type": "json_object"}
     )
-    
-    return json.loads(response.choices[0].message.content)
+
+    data = json.loads(response.choices[0].message.content)
+    assistant_reply = data.get("assistant_reply", "我已根据你的要求更新整理计划。")
+    proposed_plan = data.get("plan", {})
+
+    if not isinstance(proposed_plan, dict):
+        proposed_plan = {}
+
+    final_plan = normalize_plan(file_list, proposed_plan, fallback_plan=current_plan)
+    return assistant_reply, final_plan
+
+
+def execute_plan(plan):
+    """按最终方案执行实际移动"""
+    print("\n🚀 开始执行物理移动...")
+    for rel_filepath, target_dir_name in plan.items():
+        source_path = os.path.join(TARGET_FOLDER, rel_filepath)
+        dest_dir = os.path.join(TARGET_FOLDER, target_dir_name)
+
+        if not os.path.exists(source_path):
+            print(f"⚠️ 源文件不存在，已跳过: {rel_filepath}")
+            continue
+
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir)
+
+        filename = os.path.basename(rel_filepath)
+        dest_path = os.path.join(dest_dir, filename)
+
+        try:
+            shutil.move(source_path, dest_path)
+            print(f"✅ 成功移动: {rel_filepath} -> {target_dir_name}/{filename}")
+        except Exception as e:
+            print(f"❌ 移动失败 [{rel_filepath}]: {e}")
+
+    removed_count = remove_empty_dirs(TARGET_FOLDER)
+    if removed_count > 0:
+        print(f"\n🧹 已自动清理 {removed_count} 个空文件夹。")
+    else:
+        print("\n🧹 未发现可清理的空文件夹。")
+
+    print("\n🎉 整理完成！快去文件夹里看看吧。")
+
+
+def remove_empty_dirs(folder_path):
+    """递归删除指定目录下的空文件夹（不删除根目录本身）"""
+    if not os.path.exists(folder_path):
+        return 0
+
+    removed_count = 0
+    for root, dirs, _ in os.walk(folder_path, topdown=False):
+        for dir_name in dirs:
+            dir_path = os.path.join(root, dir_name)
+            try:
+                if not os.listdir(dir_path):
+                    os.rmdir(dir_path)
+                    removed_count += 1
+                    print(f"🗑️ 已删除空文件夹: {os.path.relpath(dir_path, folder_path)}")
+            except Exception as e:
+                print(f"⚠️ 清理空文件夹失败 [{dir_path}]: {e}")
+
+    return removed_count
 
 def main():
-    print("=== 🤖 智能文件夹管家 v1.0 启动 ===")
+    print("=== 🤖 智能文件夹管家 v2.0（多轮对话版）启动 ===")
     
     # 1. 获取所有层级的文件
     files = get_files_recursive(TARGET_FOLDER)
@@ -71,42 +170,40 @@ def main():
     print(f"📂 在主目录及子目录中共发现 {len(files)} 个文件。")
     
     try:
-        # 2. 获取整理计划
-        plan = ask_llm_for_plan(files)
-        print("\n✨ 整理方案出炉！")
-        
-        for rel_filepath, target_dir_name in plan.items():
-            print(f"📄 [{rel_filepath}] -> 📁 [{target_dir_name}]")
-            
-        # 3. ⚠️ 人类确认机制 (Human-in-the-loop)
-        confirm = input("\n❓ 是否执行上述移动计划？(输入 Y 确认，其他任意键取消): ")
-        
-        if confirm.strip().upper() == 'Y':
-            print("\n🚀 开始执行物理移动...")
-            for rel_filepath, target_dir_name in plan.items():
-                # 原始完整路径
-                source_path = os.path.join(TARGET_FOLDER, rel_filepath)
-                # 目标文件夹的完整路径
-                dest_dir = os.path.join(TARGET_FOLDER, target_dir_name)
-                
-                # 如果目标文件夹不存在，Python 会自动帮你新建它！
-                if not os.path.exists(dest_dir):
-                    os.makedirs(dest_dir)
-                
-                # 提取纯文件名 (比如把 "src/main.c" 变成 "main.c")
-                filename = os.path.basename(rel_filepath)
-                # 最终要存放的位置
-                dest_path = os.path.join(dest_dir, filename)
-                
-                try:
-                    shutil.move(source_path, dest_path)
-                    print(f"✅ 成功移动: {filename}")
-                except Exception as e:
-                    print(f"❌ 移动失败 [{rel_filepath}]: {e}")
-            
-            print("\n🎉 整理完成！快去文件夹里看看吧。")
-        else:
-            print("\n🛑 已取消移动，文件停留在原位，一切安全。")
+        # 2. 初始整理计划
+        plan = {file_path: "未分类" for file_path in files}
+        first_instruction = "请先给出一个合理的初始分类方案。"
+        assistant_reply, plan = ask_llm_for_plan(files, plan, first_instruction)
+        print(f"\n🤖 {assistant_reply}")
+        show_plan(plan)
+
+        # 3. 多轮对话优化
+        print("\n💬 你可以继续输入新要求来优化方案。")
+        print("   - 输入 /show 查看当前方案")
+        print("   - 输入 /run  执行移动")
+        print("   - 输入 /exit 取消退出")
+
+        while True:
+            user_text = input("\n你: ").strip()
+
+            if not user_text:
+                continue
+
+            if user_text.lower() == "/show":
+                show_plan(plan)
+                continue
+
+            if user_text.lower() == "/exit":
+                print("\n🛑 已取消移动，文件停留在原位，一切安全。")
+                break
+
+            if user_text.lower() == "/run":
+                execute_plan(plan)
+                break
+
+            assistant_reply, plan = ask_llm_for_plan(files, plan, user_text)
+            print(f"\n🤖 {assistant_reply}")
+            show_plan(plan)
             
     except Exception as e:
         print(f"❌ 运行出错: {e}")
