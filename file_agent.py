@@ -6,8 +6,25 @@ from openai import OpenAI
 # ==========================================
 # 1. 智谱 GLM-5 API 配置
 # ==========================================
+API_KEY_FILE = "./api_key.txt"
+
+
+def load_api_key(file_path):
+    """从 txt 文件读取 API Key"""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"找不到密钥文件: {file_path}")
+
+    with open(file_path, "r", encoding="utf-8") as f:
+        api_key = f.read().strip()
+
+    if not api_key:
+        raise ValueError(f"密钥文件为空: {file_path}")
+
+    return api_key
+
+
 client = OpenAI(
-    api_key="f0f0ac70bb5d40089d62379dafce2c44.faHeX44lvuNoBb2b", # 请替换为你的真实 Key
+    api_key=load_api_key(API_KEY_FILE),
     base_url="https://open.bigmodel.cn/api/paas/v4/" 
 )
 
