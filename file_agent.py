@@ -30,6 +30,7 @@ client = OpenAI(
 )
 
 TARGET_FOLDER = "./test_folder"
+TOOL_WHITELIST = {"preview_move", "ensure_dir", "move_file", "remove_empty_dirs"}
 
 
 def show_plan(plan):
@@ -37,6 +38,37 @@ def show_plan(plan):
     print("\n✨ 当前整理方案：")
     for rel_filepath, target_dir_name in plan.items():
         print(f"📄 [{rel_filepath}] -> 📁 [{target_dir_name}]")
+
+
+def run_tool(action, **kwargs):
+    """工具白名单调度器：只允许执行预定义工具动作"""
+    if action not in TOOL_WHITELIST:
+        raise ValueError(f"不允许的工具动作: {action}")
+
+    if action == "preview_move":
+        rel_filepath = kwargs["rel_filepath"]
+        target_dir_name = kwargs["target_dir_name"]
+        filename = os.path.basename(rel_filepath)
+        print(f"🧪 [DRY-RUN] 将移动: {rel_filepath} -> {target_dir_name}/{filename}")
+        return True
+
+    if action == "ensure_dir":
+        dest_dir = kwargs["dest_dir"]
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir)
+        return True
+
+    if action == "move_file":
+        source_path = kwargs["source_path"]
+        dest_path = kwargs["dest_path"]
+        shutil.move(source_path, dest_path)
+        return True
+
+    if action == "remove_empty_dirs":
+        folder_path = kwargs["folder_path"]
+        return remove_empty_dirs(folder_path)
+
+    return False
 
 
 def normalize_plan(files, proposed_plan, fallback_plan=None):
@@ -158,36 +190,53 @@ def ask_llm_for_plan(file_list, file_metadata, current_plan, user_instruction):
     return assistant_reply, final_plan
 
 
-def execute_plan(plan):
-    """按最终方案执行实际移动"""
-    print("\n🚀 开始执行物理移动...")
+def execute_plan(plan, dry_run=False):
+    """按最终方案执行移动；dry_run=True 时只预演不落地"""
+    if dry_run:
+        print("\n🧪 开始 Dry-Run 预演（不会修改任何文件）...")
+    else:
+        print("\n🚀 开始执行物理移动...")
+
+    moved_count = 0
+    skipped_count = 0
+
     for rel_filepath, target_dir_name in plan.items():
         source_path = os.path.join(TARGET_FOLDER, rel_filepath)
         dest_dir = os.path.join(TARGET_FOLDER, target_dir_name)
 
         if not os.path.exists(source_path):
             print(f"⚠️ 源文件不存在，已跳过: {rel_filepath}")
+            skipped_count += 1
             continue
-
-        if not os.path.exists(dest_dir):
-            os.makedirs(dest_dir)
 
         filename = os.path.basename(rel_filepath)
         dest_path = os.path.join(dest_dir, filename)
 
         try:
-            shutil.move(source_path, dest_path)
-            print(f"✅ 成功移动: {rel_filepath} -> {target_dir_name}/{filename}")
+            if dry_run:
+                run_tool("preview_move", rel_filepath=rel_filepath, target_dir_name=target_dir_name)
+                moved_count += 1
+            else:
+                run_tool("ensure_dir", dest_dir=dest_dir)
+                run_tool("move_file", source_path=source_path, dest_path=dest_path)
+                moved_count += 1
+                print(f"✅ 成功移动: {rel_filepath} -> {target_dir_name}/{filename}")
         except Exception as e:
             print(f"❌ 移动失败 [{rel_filepath}]: {e}")
+            skipped_count += 1
 
-    removed_count = remove_empty_dirs(TARGET_FOLDER)
-    if removed_count > 0:
-        print(f"\n🧹 已自动清理 {removed_count} 个空文件夹。")
+    if dry_run:
+        print(f"\n📊 Dry-Run 结果：计划移动 {moved_count} 个，跳过/失败 {skipped_count} 个。")
+        print("🧪 Dry-Run 结束：未对磁盘做任何修改。")
     else:
-        print("\n🧹 未发现可清理的空文件夹。")
+        removed_count = run_tool("remove_empty_dirs", folder_path=TARGET_FOLDER)
+        if removed_count > 0:
+            print(f"\n🧹 已自动清理 {removed_count} 个空文件夹。")
+        else:
+            print("\n🧹 未发现可清理的空文件夹。")
 
-    print("\n🎉 整理完成！快去文件夹里看看吧。")
+        print(f"\n📊 执行结果：成功移动 {moved_count} 个，跳过/失败 {skipped_count} 个。")
+        print("\n🎉 整理完成！快去文件夹里看看吧。")
 
 
 def remove_empty_dirs(folder_path):
@@ -233,6 +282,7 @@ def main():
         # 3. 多轮对话优化
         print("\n💬 你可以继续输入新要求来优化方案。")
         print("   - 输入 /show 查看当前方案")
+        print("   - 输入 /dryrun 仅预演（不修改文件）")
         print("   - 输入 /run  执行移动")
         print("   - 输入 /exit 取消退出")
 
@@ -253,6 +303,10 @@ def main():
             if user_text.lower() == "/run":
                 execute_plan(plan)
                 break
+
+            if user_text.lower() == "/dryrun":
+                execute_plan(plan, dry_run=True)
+                continue
 
             assistant_reply, plan = ask_llm_for_plan(files, file_metadata, plan, user_text)
             print(f"\n🤖 {assistant_reply}")
