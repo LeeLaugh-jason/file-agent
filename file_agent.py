@@ -1,6 +1,7 @@
 import os
 import json
 import shutil  # 📦 新增：用于真实移动文件的标准库
+from datetime import datetime
 from openai import OpenAI
 
 # ==========================================
@@ -73,13 +74,42 @@ def get_files_recursive(folder_path):
             
     return file_list
 
-def ask_llm_for_plan(file_list, current_plan, user_instruction):
+
+def get_file_metadata(folder_path, file_list):
+    """为每个文件补充有用元信息，便于模型更准确分类"""
+    metadata_list = []
+
+    for rel_path in file_list:
+        full_path = os.path.join(folder_path, rel_path)
+        try:
+            stat = os.stat(full_path)
+            modified_at = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+            size_bytes = stat.st_size
+        except Exception:
+            modified_at = "未知"
+            size_bytes = -1
+
+        _, ext = os.path.splitext(rel_path)
+        metadata_list.append(
+            {
+                "path": rel_path,
+                "ext": ext.lower() if ext else "无扩展名",
+                "size_bytes": size_bytes,
+                "modified_at": modified_at,
+            }
+        )
+
+    return metadata_list
+
+
+def ask_llm_for_plan(file_list, file_metadata, current_plan, user_instruction):
     """支持多轮对话：按用户追加要求不断优化整理计划"""
     prompt = f"""
 你是一个专业的电脑文件夹整理助手。
 
 我会给你：
 1) 全量文件相对路径列表
+2) 每个文件的元信息（扩展名、大小、修改时间）
 2) 当前整理计划（相对路径 -> 目标根文件夹）
 3) 用户本轮追加要求
 
@@ -96,6 +126,9 @@ def ask_llm_for_plan(file_list, current_plan, user_instruction):
 
 文件列表：
 {file_list}
+
+文件元信息：
+{json.dumps(file_metadata, ensure_ascii=False)}
 
 当前计划：
 {json.dumps(current_plan, ensure_ascii=False)}
@@ -184,13 +217,14 @@ def main():
     if not files:
         print("文件夹是空的，没啥可整理的。")
         return
+    file_metadata = get_file_metadata(TARGET_FOLDER, files)
     print(f"📂 在主目录及子目录中共发现 {len(files)} 个文件。")
     
     try:
         # 2. 初始整理计划
         plan = {file_path: "未分类" for file_path in files}
         first_instruction = "请先给出一个合理的初始分类方案。"
-        assistant_reply, plan = ask_llm_for_plan(files, plan, first_instruction)
+        assistant_reply, plan = ask_llm_for_plan(files, file_metadata, plan, first_instruction)
         print(f"\n🤖 {assistant_reply}")
         show_plan(plan)
 
@@ -218,7 +252,7 @@ def main():
                 execute_plan(plan)
                 break
 
-            assistant_reply, plan = ask_llm_for_plan(files, plan, user_text)
+            assistant_reply, plan = ask_llm_for_plan(files, file_metadata, plan, user_text)
             print(f"\n🤖 {assistant_reply}")
             show_plan(plan)
             
