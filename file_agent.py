@@ -210,7 +210,7 @@ def remove_empty_dirs(folder_path):
     return removed_count
 
 def main():
-    print("=== 🤖 智能文件夹管家 v2.0（多轮对话版）启动 ===")
+    print("=== 🤖 智能文件夹管家 v1.0.2（多轮对话版）启动 ===")
     
     # 1. 获取所有层级的文件
     files = get_files_recursive(TARGET_FOLDER)
@@ -223,7 +223,9 @@ def main():
     try:
         # 2. 初始整理计划
         plan = {file_path: "未分类" for file_path in files}
-        first_instruction = "请先给出一个合理的初始分类方案。"
+        first_instruction = input("\n请输入你希望的整理方式（例如：按课程名分类）：").strip()
+        if not first_instruction:
+            first_instruction = "请先给出一个合理的初始分类方案。"
         assistant_reply, plan = ask_llm_for_plan(files, file_metadata, plan, first_instruction)
         print(f"\n🤖 {assistant_reply}")
         show_plan(plan)
