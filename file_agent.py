@@ -33,6 +33,37 @@ TARGET_FOLDER = "./test_folder"
 TOOL_WHITELIST = {"preview_move", "ensure_dir", "move_file", "remove_empty_dirs"}
 
 
+class MCPToolRegistry:
+    """轻量 MCP 风格工具注册中心（本地实现）"""
+
+    def __init__(self):
+        self._tools = {}
+
+    def register(self, name, description, parameters, handler):
+        self._tools[name] = {
+            "schema": {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters,
+                },
+            },
+            "handler": handler,
+        }
+
+    def openai_tools(self):
+        return [item["schema"] for item in self._tools.values()]
+
+    def execute(self, name, args):
+        if name not in self._tools:
+            return {"ok": False, "error": f"未注册工具: {name}"}
+        try:
+            return self._tools[name]["handler"](args)
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+
 def show_plan(plan):
     """按可读格式打印当前整理方案"""
     print("\n✨ 当前整理方案：")
@@ -53,7 +84,7 @@ def run_tool(action, **kwargs):
         return True
 
     if action == "ensure_dir":
-        dest_dir = kwargs["dest_dir"]
+        dest_dir = kwargs["dest_dir"]+
         if not os.path.exists(dest_dir):
             os.makedirs(dest_dir)
         return True
@@ -69,6 +100,73 @@ def run_tool(action, **kwargs):
         return remove_empty_dirs(folder_path)
 
     return False
+
+
+def build_planning_mcp_registry(file_list, file_metadata, current_plan):
+    """构建用于分类规划的 MCP 工具集合"""
+    registry = MCPToolRegistry()
+
+    def mcp_get_files(_args):
+        return {"ok": True, "files": file_list}
+
+    def mcp_get_file_metadata(_args):
+        return {"ok": True, "file_metadata": file_metadata}
+
+    def mcp_get_current_plan(_args):
+        return {"ok": True, "current_plan": current_plan}
+
+    def mcp_submit_plan(args):
+        assistant_reply = args.get("assistant_reply", "我已根据你的要求更新整理计划。")
+        plan = args.get("plan", {})
+        if not isinstance(plan, dict):
+            return {"ok": False, "error": "plan 必须是对象（dict）"}
+        return {
+            "ok": True,
+            "assistant_reply": assistant_reply,
+            "plan": plan,
+            "is_final": True,
+        }
+
+    empty_object_schema = {"type": "object", "properties": {}, "required": []}
+    submit_schema = {
+        "type": "object",
+        "properties": {
+            "assistant_reply": {"type": "string", "description": "给用户的简短中文说明（1~3句）"},
+            "plan": {
+                "type": "object",
+                "description": "文件相对路径到目标根文件夹名的映射",
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["assistant_reply", "plan"],
+    }
+
+    registry.register(
+        name="mcp_get_files",
+        description="获取全部文件相对路径列表",
+        parameters=empty_object_schema,
+        handler=mcp_get_files,
+    )
+    registry.register(
+        name="mcp_get_file_metadata",
+        description="获取每个文件的元信息（扩展名、大小、修改时间）",
+        parameters=empty_object_schema,
+        handler=mcp_get_file_metadata,
+    )
+    registry.register(
+        name="mcp_get_current_plan",
+        description="获取当前整理计划",
+        parameters=empty_object_schema,
+        handler=mcp_get_current_plan,
+    )
+    registry.register(
+        name="mcp_submit_plan",
+        description="提交最终整理计划；当你完成规划后调用此工具",
+        parameters=submit_schema,
+        handler=mcp_submit_plan,
+    )
+
+    return registry
 
 
 def normalize_plan(files, proposed_plan, fallback_plan=None):
@@ -135,53 +233,92 @@ def get_file_metadata(folder_path, file_list):
 
 
 def ask_llm_for_plan(file_list, file_metadata, current_plan, user_instruction):
-    """支持多轮对话：按用户追加要求不断优化整理计划"""
-    prompt = f"""
-你是一个专业的电脑文件夹整理助手。
+    """使用 MCP + Function Calling 方式生成或更新整理计划"""
+    print("🧠 GLM-5 正在通过 MCP 工具链生成整理方案...")
+    registry = build_planning_mcp_registry(file_list, file_metadata, current_plan)
 
-我会给你：
-1) 全量文件相对路径列表
-2) 每个文件的元信息（扩展名、大小、修改时间）
-2) 当前整理计划（相对路径 -> 目标根文件夹）
-3) 用户本轮追加要求
-
-请你根据用户要求调整计划，并严格返回 JSON 对象，格式如下：
-{{
-  "assistant_reply": "给用户的简短中文说明（1~3句）",
-  "plan": {{"文件相对路径": "目标根文件夹", "...": "..."}}
-}}
-
-硬性要求：
-- plan 必须尽量覆盖所有输入文件路径；不要虚构不存在的文件
-- 每个 value 必须是目标根文件夹名称（不要写完整路径）
-- 只输出 JSON，不要输出 Markdown
-
-文件列表：
-{file_list}
-
-文件元信息：
-{json.dumps(file_metadata, ensure_ascii=False)}
-
-当前计划：
-{json.dumps(current_plan, ensure_ascii=False)}
-
-用户本轮要求：
-{user_instruction}
-"""
-
-    print("🧠 GLM-5 正在根据你的新要求优化方案...")
-    response = client.chat.completions.create(
-        model="glm-5",
-        messages=[
-            {"role": "system", "content": "你是一个只输出 JSON 格式的机器助手。"},
-            {"role": "user", "content": prompt}
-        ],
-        response_format={"type": "json_object"}
+    system_prompt = (
+        "你是一个专业文件整理助手。"
+        "你必须通过工具获取信息，并在完成规划后调用 mcp_submit_plan 提交最终方案。"
+        "硬性要求：plan 尽量覆盖所有输入文件；不得虚构文件；"
+        "plan 的 value 必须是目标根文件夹名称（不是完整路径）。"
+    )
+    user_prompt = (
+        "请根据用户要求输出整理计划。"
+        f"\n用户本轮要求：{user_instruction}"
     )
 
-    data = json.loads(response.choices[0].message.content)
-    assistant_reply = data.get("assistant_reply", "我已根据你的要求更新整理计划。")
-    proposed_plan = data.get("plan", {})
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    final_payload = None
+    max_rounds = 8
+
+    for _ in range(max_rounds):
+        response = client.chat.completions.create(
+            model="glm-5",
+            messages=messages,
+            tools=registry.openai_tools(),
+            tool_choice="auto",
+        )
+
+        assistant_msg = response.choices[0].message
+        tool_calls = assistant_msg.tool_calls or []
+
+        assistant_record = {
+            "role": "assistant",
+            "content": assistant_msg.content or "",
+        }
+
+        if tool_calls:
+            assistant_record["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.function.name,
+                        "arguments": call.function.arguments,
+                    },
+                }
+                for call in tool_calls
+            ]
+
+        messages.append(assistant_record)
+
+        if not tool_calls:
+            break
+
+        for call in tool_calls:
+            tool_name = call.function.name
+            try:
+                tool_args = json.loads(call.function.arguments or "{}")
+            except Exception:
+                tool_args = {}
+
+            result = registry.execute(tool_name, tool_args)
+
+            if tool_name == "mcp_submit_plan" and result.get("ok"):
+                final_payload = result
+
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": json.dumps(result, ensure_ascii=False),
+                }
+            )
+
+        if final_payload:
+            break
+
+    if final_payload:
+        assistant_reply = final_payload.get("assistant_reply", "我已根据你的要求更新整理计划。")
+        proposed_plan = final_payload.get("plan", {})
+    else:
+        assistant_reply = "我已根据你的要求更新整理计划。"
+        proposed_plan = current_plan
 
     if not isinstance(proposed_plan, dict):
         proposed_plan = {}
