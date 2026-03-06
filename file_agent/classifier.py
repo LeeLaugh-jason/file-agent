@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Optional, Tuple
 
-from openai import OpenAI, BadRequestError
+from openai import OpenAI, BadRequestError, APIConnectionError
 
 from .config import AgentConfig
 from .scanner import FileInfo, file_list_paths, file_list_metadata
@@ -277,7 +277,12 @@ def ask_llm_for_plan(
     final_payload = None
 
     def _call_api(msgs: list) -> object:
-        """调用 LLM API，遇到 context 超长时自动裁剪 history 重试一次。"""
+        """调用 LLM API，遇到 context 超长时原地裁剪 msgs 并重试。
+
+        裁剪会直接修改传入的 msgs 列表（in-place），使外层循环后续轮次
+        也从干净的基线出发，避免重复触发溢出警告。
+        重试失败时抛出 RuntimeError，给调用方友好提示。
+        """
         try:
             return client.chat.completions.create(
                 model=cfg.model,
@@ -296,12 +301,22 @@ def ask_llm_for_plan(
                 system_msgs = [m for m in msgs if m.get("role") == "system"]
                 user_msgs   = [m for m in msgs if m.get("role") == "user"]
                 trimmed = system_msgs + ([user_msgs[-1]] if user_msgs else [])
-                return client.chat.completions.create(
-                    model=cfg.model,
-                    messages=trimmed,
-                    tools=registry.openai_tools(),
-                    tool_choice="auto",
-                )
+                # 原地更新 msgs，让外层循环后续轮次也使用裁剪后的基线；
+                # retry 调用传快照副本，避免后续 append 污染 mock 记录的引用
+                msgs.clear()
+                msgs.extend(trimmed)
+                try:
+                    return client.chat.completions.create(
+                        model=cfg.model,
+                        messages=list(msgs),
+                        tools=registry.openai_tools(),
+                        tool_choice="auto",
+                    )
+                except (BadRequestError, APIConnectionError) as retry_err:
+                    raise RuntimeError(
+                        "上下文裁剪后仍无法完成请求（消息体可能仍过大或网络中断），"
+                        "请尝试重新发送或减少文件数量。"
+                    ) from retry_err
             raise
 
     for _ in range(max_rounds):

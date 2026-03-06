@@ -84,16 +84,21 @@ class ImplementMode:
         """调用 LLM 更新整理方案，返回 LLM 的文字回复。
 
         使用多轮对话历史保持上下文。
+        若遇到上下文过大或网络中断，捕获异常并返回友好提示，避免程序崩溃。
         """
-        new_plan, reply, self._history = ask_llm_for_plan(
-            files=self.files,
-            current_plan=self.plan,
-            user_instruction=user_input,
-            cfg=self.cfg,
-            history=self._history,
-        )
-        self.plan = new_plan
-        return reply
+        from openai import APIConnectionError
+        try:
+            new_plan, reply, self._history = ask_llm_for_plan(
+                files=self.files,
+                current_plan=self.plan,
+                user_instruction=user_input,
+                cfg=self.cfg,
+                history=self._history,
+            )
+            self.plan = new_plan
+            return reply
+        except (APIConnectionError, RuntimeError) as e:
+            return f"❌ 请求失败：{e}\n（提示：可尝试重新输入，或先 /show 确认现有方案）"
 
     def clear_history(self) -> None:
         """清空 LLM 对话历史。"""
