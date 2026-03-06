@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from config import AgentConfig
-from scanner import FileInfo
-from executor import (
+from file_agent.config import AgentConfig
+from file_agent.scanner import FileInfo
+from file_agent.executor import (
     MoveRecord,
     execute_plan,
     rollback,

@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from config import AgentConfig
-from scanner import FileInfo
-from extractors import extract_content, enrich_file_list, _EXTRACTORS
+from file_agent.config import AgentConfig
+from file_agent.scanner import FileInfo
+from file_agent.extractors import extract_content, enrich_file_list, _EXTRACTORS
 
 
 class TestTextExtractor:

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from config import AgentConfig
-from scanner import FileInfo, scan_directories, file_list_paths, file_list_metadata
+from file_agent.config import AgentConfig
+from file_agent.scanner import FileInfo, scan_directories, file_list_paths, file_list_metadata
 
 
 class TestScanDirectories:

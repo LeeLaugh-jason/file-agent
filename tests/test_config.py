@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from config import AgentConfig, load_config, save_config, _read_legacy_api_key
+from file_agent.config import AgentConfig, load_config, save_config, _read_legacy_api_key
 
 
 class TestAgentConfigDefaults:
