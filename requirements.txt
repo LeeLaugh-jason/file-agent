@@ -1,6 +1,7 @@
 openai
 rich
 pyyaml
+prompt_toolkit>=3.0
 python-docx
 python-pptx
 pandas
