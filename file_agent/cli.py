@@ -1,15 +1,15 @@
 """
-命令行交互模块 ─ 使用 rich 美化输出，提供完整交互循环。
+命令行交互模块 ─ 双模式状态机 + prompt_toolkit 增强型 UX。
 
-交互命令:
-    /show       显示当前分类方案表格
-    /dryrun     预演移动（不修改磁盘）
-    /run        执行移动
-    /undo       回滚上次执行
-    /save <f>   导出方案为 JSON
-    /load <f>   从 JSON 加载方案
-    /exit       退出
-    其他文本     作为自然语言指令更新方案
+模式:
+    Chat 模式（只读）   — 自然语言对话，探索文件信息，不修改磁盘
+    Implement 模式（执行）— LLM 生成方案，dry-run 预览，确认执行，多层撤销
+
+切换:
+    Tab 键              — 在两种模式间快速切换
+    :mode chat          — 切换到 Chat 模式
+    :mode implement     — 切换到 Implement 模式
+    :exit               — 退出程序
 """
 
 from __future__ import annotations
@@ -18,6 +18,9 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -30,6 +33,8 @@ from .scanner import FileInfo, scan_directories, file_list_paths
 from .extractors import enrich_file_list
 from .classifier import FilePlan, ask_llm_for_plan
 from .executor import MoveRecord, execute_plan, rollback, remove_empty_dirs
+from .undo_manager import UndoManager
+from .modes import Mode, ChatMode, ImplementMode
 
 console = Console()
 
@@ -158,31 +163,102 @@ def load_plan_json(path: str) -> Optional[FilePlan]:
 
 
 # ==========================================
-# 主交互循环
+# 主交互循环（模式状态机）
 # ==========================================
 
-class App:
-    """CLI 应用主类，管理整个交互生命周期。"""
 
-    def __init__(self, cfg: AgentConfig):
+# ── 模式对应的 rich 颜色与图标 ──────────────────────────────────────────
+_MODE_STYLE: dict = {
+    Mode.CHAT: ("cyan", "🔵"),
+    Mode.IMPLEMENT: ("red", "🔴"),
+}
+
+
+class App:
+    """CLI 应用主类：双模式状态机。
+
+    模式：
+      Mode.CHAT       — 只读，文件探索与 LLM 对话
+      Mode.IMPLEMENT  — 执行，文件整理 + dry-run + 多层撤销
+    """
+
+    def __init__(self, cfg: AgentConfig) -> None:
         self.cfg = cfg
         self.files: List[FileInfo] = []
-        self.plan: FilePlan = {}
-        self.history: Optional[List[dict]] = None
-        self.last_records: List[MoveRecord] = []
+        self.mode: Mode = Mode.CHAT
+        self.undo_manager = UndoManager()
+        self._start_mode: str = "chat"  # 可由外部（main.py）在 run() 前覆盖
 
-    def run(self) -> None:
-        """主入口。"""
+        # 两个模式实例（在 _init_modes 中初始化）
+        self._chat: Optional[ChatMode] = None
+        self._impl: Optional[ImplementMode] = None
+
+    # ─── 初始化模式实例 ──────────────────────────────────────────────
+
+    def _init_modes(self) -> None:
+        """扫描完成后初始化 ChatMode 和 ImplementMode。"""
+        self._chat = ChatMode(self.files, self.cfg)
+        self._impl = ImplementMode(
+            files=self.files,
+            cfg=self.cfg,
+            undo_manager=self.undo_manager,
+            show_plan_fn=show_plan_table,
+            show_results_fn=show_move_results,
+        )
+
+    # ─── prompt_toolkit 会话构建 ─────────────────────────────────────
+
+    def _build_prompt_session(self) -> PromptSession:
+        """构建带 Tab 键绑定的 prompt_toolkit 会话。"""
+        kb = KeyBindings()
+
+        @kb.add("tab")
+        def _toggle_mode(event):
+            """Tab 键切换模式。"""
+            self._switch_mode(self.mode.toggle())
+            # 清空当前输入行并刷新提示符
+            event.app.current_buffer.reset()
+
+        return PromptSession(key_bindings=kb)
+
+    def _get_prompt_html(self) -> HTML:
+        """返回当前模式对应的彩色提示符（prompt_toolkit HTML 格式）。"""
+        color, icon = _MODE_STYLE[self.mode]
+        label = self.mode.label
+        return HTML(
+            f'<ansigreen><b>[{icon} {label}]</b></ansigreen>'
+            f' <ansiwhite>你:</ansiwhite> '
+        ) if color == "cyan" else HTML(
+            f'<ansired><b>[{icon} {label}]</b></ansired>'
+            f' <ansiwhite>你:</ansiwhite> '
+        )
+
+    # ─── 模式切换 ────────────────────────────────────────────────────
+
+    def _switch_mode(self, target: Mode) -> None:
+        """切换到目标模式并打印反馈面板。"""
+        if target == self.mode:
+            return
+        self.mode = target
+        color, icon = _MODE_STYLE[target]
+        style = f"bold {color}"
         console.print(Panel(
-            "[bold cyan]🤖 智能文件夹管家 v2.0[/bold cyan]\n"
-            "模块化重构版 ─ 支持多目录、内容提取、回滚",
+            f"{icon}  已切换到 [bold]{target.description}[/bold]",
+            style=style,
             expand=False,
         ))
+        # 打印对应模式的帮助
+        if target == Mode.CHAT:
+            self._chat.show_help()
+        else:
+            self._impl.show_help()
 
-        # --- 扫描 ---
+    # ─── 扫描与刷新 ──────────────────────────────────────────────────
+
+    def _scan(self) -> bool:
+        """扫描目录，返回是否扫描到文件。"""
         roots = self.cfg.scan_dirs
         console.print(f"\n📂 扫描目录: {', '.join(roots)}")
-
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -192,156 +268,176 @@ class App:
             task = progress.add_task("扫描文件...", total=None)
             self.files = scan_directories(roots, self.cfg)
             progress.update(task, description="提取文件内容...")
-            self.files = enrich_file_list(self.files, self.cfg)
+            if self.cfg.max_content_chars > 0:
+                self.files = enrich_file_list(self.files, self.cfg)
+        return bool(self.files)
 
-        if not self.files:
+    def _rescan(self) -> None:
+        """重新扫描并刷新两个模式的文件列表。"""
+        if not self._scan():
+            return
+        self._chat.refresh(self.files)
+        self._impl.refresh(self.files)
+        self.undo_manager.clear()  # 文件结构已变，旧的撤销历史失效
+        console.print(f"[dim]🔄 已刷新，发现 {len(self.files)} 个文件[/dim]")
+
+    # ─── 主入口 ──────────────────────────────────────────────────────
+
+    def run(self) -> None:
+        """启动 Agent，进入交互循环。"""
+        console.print(Panel(
+            "[bold cyan]🤖 智能文件夹管家 v3.0[/bold cyan]\n"
+            "双模式架构 ─  [cyan]Chat（只读探索）[/cyan]  ·  [red]Implement（执行整理）[/red]\n"
+            "[dim]Tab 键切换模式  ·  :help 查看命令[/dim]",
+            expand=False,
+        ))
+
+        # 初次扫描
+        if not self._scan():
             console.print("[yellow]⚠️ 未发现任何文件，请检查扫描目录。[/yellow]")
             return
 
         console.print(f"📂 共发现 [bold]{len(self.files)}[/bold] 个文件")
 
-        # --- 初始分类 ---
-        self.plan = {fi.rel_path: "未分类" for fi in self.files}
+        # 初始化模式
+        self._init_modes()
 
-        first_instruction = console.input(
-            "\n[bold]请输入你希望的整理方式（例如：按课程名分类）：[/bold] "
-        ).strip()
-        if not first_instruction:
-            first_instruction = "请先给出一个合理的初始分类方案。"
+        # 如果命令行指定了 --mode implement，直接进入 Implement 模式
+        if self._start_mode == "implement":
+            self.mode = Mode.IMPLEMENT
+            color, icon = _MODE_STYLE[Mode.IMPLEMENT]
+            console.print(Panel(
+                f"{icon}  已进入 [bold]{Mode.IMPLEMENT.description}[/bold]",
+                style=f"bold {color}",
+                expand=False,
+            ))
+            self._impl.show_help()
+        else:
+            # 进入 Chat 模式，展示统计摘要
+            console.print(Panel(
+                f"[cyan]🔵 已进入 Chat 模式 — {Mode.CHAT.description}[/cyan]\n"
+                "[dim]输入文件相关问题，或输入 :mode implement 切换到执行模式[/dim]",
+                expand=False,
+            ))
+            self._chat.show_summary()
+            self._chat.show_help()
 
-        self.plan, reply, self.history = ask_llm_for_plan(
-            self.files, self.plan, first_instruction, self.cfg, self.history,
-        )
-        console.print(f"\n🤖 {reply}")
-        show_plan_table(self.plan, self.files)
+        # 构建 prompt_toolkit 会话
+        session = self._build_prompt_session()
 
-        # --- 多轮交互 ---
-        self._print_help()
-
+        # 主循环
         while True:
             try:
-                user_text = console.input("\n[bold green]你:[/bold green] ").strip()
+                user_text = session.prompt(self._get_prompt_html).strip()
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]退出[/dim]")
+                console.print("\n[dim]👋 再见！[/dim]")
                 break
 
             if not user_text:
                 continue
 
-            cmd = user_text.lower().split()
+            # ── 全局命令（两种模式都支持） ──────────────────────────────
+            cmd_lower = user_text.lower().strip()
 
-            if cmd[0] == "/show":
-                show_plan_table(self.plan, self.files)
-
-            elif cmd[0] == "/exit":
-                console.print("\n🛑 已取消，文件保持原位。")
+            if cmd_lower in (":exit", "/exit", "exit"):
+                console.print("[dim]👋 再见！[/dim]")
                 break
 
-            elif cmd[0] == "/dryrun":
-                records = execute_plan(self.plan, self.files, self.cfg, dry_run=True)
-                show_move_results(records, dry_run=True)
+            if cmd_lower in (":mode chat", "/mode chat"):
+                self._switch_mode(Mode.CHAT)
+                continue
 
-            elif cmd[0] == "/run":
-                self._do_run()
+            if cmd_lower in (":mode implement", ":mode impl", "/mode implement"):
+                self._switch_mode(Mode.IMPLEMENT)
+                continue
 
-            elif cmd[0] == "/undo":
-                self._do_undo()
+            if cmd_lower in (":help", "/help"):
+                if self.mode == Mode.CHAT:
+                    self._chat.show_help()
+                else:
+                    self._impl.show_help()
+                continue
 
-            elif cmd[0] == "/save":
-                path = cmd[1] if len(cmd) > 1 else "plan.json"
-                save_plan_json(self.plan, path)
+            if cmd_lower == ":rescan":
+                self._rescan()
+                continue
 
-            elif cmd[0] == "/load":
-                path = cmd[1] if len(cmd) > 1 else "plan.json"
-                loaded = load_plan_json(path)
-                if loaded is not None:
-                    self.plan = loaded
-                    show_plan_table(self.plan, self.files)
-
-            elif cmd[0] == "/help":
-                self._print_help()
-
+            # ── 路由到当前模式 ────────────────────────────────────────
+            if self.mode == Mode.CHAT:
+                self._handle_chat(user_text)
             else:
-                # 自然语言指令 → 更新方案
-                self.plan, reply, self.history = ask_llm_for_plan(
-                    self.files, self.plan, user_text, self.cfg, self.history,
+                self._handle_implement(user_text)
+
+    # ─── Chat 模式命令处理 ────────────────────────────────────────────
+
+    def _handle_chat(self, user_text: str) -> None:
+        cmd = user_text.lower().split()
+
+        if cmd[0] == "/summary":
+            self._chat.show_summary()
+
+        elif cmd[0] == "/clear":
+            self._chat.clear_history()
+            console.print("[dim]💬 对话历史已清空。[/dim]")
+
+        else:
+            # 发给 LLM
+            reply, suggest_implement = self._chat.ask(user_text)
+            console.print(f"\n🤖 {reply}")
+            if suggest_implement:
+                console.print(
+                    "[dim]💡 提示：按 Tab 或输入 :mode implement 切换到执行模式。[/dim]"
                 )
-                console.print(f"\n🤖 {reply}")
-                show_plan_table(self.plan, self.files)
 
-    def _do_run(self) -> None:
-        """执行移动并清理空目录。"""
-        console.print("\n[bold]🚀 开始执行物理移动...[/bold]")
-        self.last_records = execute_plan(self.plan, self.files, self.cfg, dry_run=False)
-        show_move_results(self.last_records, dry_run=False)
+    # ─── Implement 模式命令处理 ───────────────────────────────────────
 
-        # 清理空目录
-        removed = remove_empty_dirs(self.cfg.scan_dirs)
-        if removed > 0:
-            console.print(f"🧹 已清理 {removed} 个空文件夹")
+    def _handle_implement(self, user_text: str) -> None:
+        cmd = user_text.lower().split()
 
-        console.print("\n[bold green]🎉 整理完成！[/bold green]")
+        if cmd[0] == "/show":
+            self._impl.show_plan()
 
-        # 刷新文件列表（文件已移动到新位置，旧路径失效）
-        self._rescan(silent=True)
+        elif cmd[0] == "/dryrun":
+            self._impl.preview()
 
-    def _do_undo(self) -> None:
-        """回滚上次执行，并清理回滚后产生的空文件夹。"""
-        if not self.last_records:
-            console.print("[yellow]⚠️ 没有可回滚的操作记录[/yellow]")
-            return
+        elif cmd[0] == "/run":
+            success, _ = self._impl.execute()
+            if success:
+                # 执行后刷新文件列表
+                if not self._scan():
+                    return
+                self._chat.refresh(self.files)
+                self._impl.refresh(self.files)
+                # 注意：不清空 undo_manager，它由 ImplementMode 自己管理
 
-        console.print("\n[bold]⏪ 正在回滚...[/bold]")
-        rb_records = rollback(self.last_records)
-        ok = sum(1 for r in rb_records if r.success)
-        fail = sum(1 for r in rb_records if not r.success)
-        console.print(f"✅ 回滚成功 {ok} 个，失败 {fail} 个")
+        elif cmd[0] == "/undo":
+            did_undo = self._impl.undo()
+            if did_undo:
+                if not self._scan():
+                    return
+                self._chat.refresh(self.files)
+                self._impl.refresh(self.files)
 
-        # 清理回滚后残留的空文件夹
-        removed = remove_empty_dirs(self.cfg.scan_dirs)
-        if removed > 0:
-            console.print(f"🧹 已清理 {removed} 个空文件夹")
+        elif cmd[0] == "/undo-status":
+            self._impl.show_undo_status()
 
-        self.last_records = []
+        elif cmd[0] == "/save":
+            path = cmd[1] if len(cmd) > 1 else "plan.json"
+            save_plan_json(self._impl.plan, path)
 
-        # 刷新文件列表（文件已移回原位，路径重新有效）
-        self._rescan(silent=True)
+        elif cmd[0] == "/load":
+            path = cmd[1] if len(cmd) > 1 else "plan.json"
+            loaded = load_plan_json(path)
+            if loaded is not None:
+                self._impl.plan = loaded
+                self._impl.show_plan()
 
-    def _rescan(self, silent: bool = False) -> None:
-        """重新扫描目录，刷新 self.files 与 self.plan。
+        elif cmd[0] == "/clear":
+            self._impl.clear_history()
+            console.print("[dim]💬 LLM 对话历史已清空。[/dim]")
 
-        在 /run 或 /undo 后调用，防止下一轮操作使用失效路径。
-        silent=True 时不打印提示信息。
-        """
-        if not silent:
-            console.print("[dim]🔄 正在刷新文件列表...[/dim]")
-
-        self.files = scan_directories(self.cfg.scan_dirs, self.cfg)
-        if self.cfg.max_content_chars > 0:
-            self.files = enrich_file_list(self.files, self.cfg)
-
-        # 用文件当前所在的第一级目录名重建 plan，反映磁盘真实现状
-        new_plan: FilePlan = {}
-        for fi in self.files:
-            parts = Path(fi.rel_path).parts
-            current_dir = parts[0] if len(parts) > 1 else "."
-            new_plan[fi.rel_path] = current_dir
-        self.plan = new_plan
-
-        if not silent:
-            console.print(f"[dim]✅ 已发现 {len(self.files)} 个文件[/dim]")
-
-    @staticmethod
-    def _print_help() -> None:
-        console.print(
-            "\n[dim]💬 交互命令:[/dim]\n"
-            "  [bold]/show[/bold]       查看当前方案\n"
-            "  [bold]/dryrun[/bold]     预演移动（不修改文件）\n"
-            "  [bold]/run[/bold]        执行移动\n"
-            "  [bold]/undo[/bold]       撤销上次移动\n"
-            "  [bold]/save[/bold] [f]   导出方案为 JSON\n"
-            "  [bold]/load[/bold] [f]   从 JSON 加载方案\n"
-            "  [bold]/help[/bold]       显示此帮助\n"
-            "  [bold]/exit[/bold]       退出\n"
-            "  [dim]其他文本     作为自然语言指令更新方案[/dim]"
-        )
+        else:
+            # 自然语言指令 → LLM 更新方案
+            reply = self._impl.ask_for_plan(user_text)
+            console.print(f"\n🤖 {reply}")
+            self._impl.show_plan()
