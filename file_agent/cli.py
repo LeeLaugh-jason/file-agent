@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
@@ -241,7 +242,7 @@ class App:
             # 再由 rich 写入，避免覆盖提示符中的"你"字。
             def _do_switch():
                 self._switch_mode(self.mode.toggle())
-            event.app.run_in_terminal(_do_switch)
+            run_in_terminal(_do_switch)
             event.app.current_buffer.reset()
 
         return kb

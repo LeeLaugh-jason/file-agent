@@ -233,17 +233,19 @@ class TestTabKeyBinding:
         assert len(kb.bindings) > 0, "KeyBindings 中没有任何绑定，请检查 _build_key_bindings"
 
     def test_tab_calls_run_in_terminal(self, app):
-        """【回归】Tab 触发时必须调用 event.app.run_in_terminal。
+        """【回归】Tab 触发时必须调用模块级 run_in_terminal()。
 
-        直接调用 _switch_mode 会在 prompt_toolkit 持有终端时写入 rich 输出，
-        导致提示符中的"你"字被覆盖清空。
+        run_in_terminal 是 prompt_toolkit.application 的独立函数，
+        不是 event.app 的实例方法；直接调用 _switch_mode 会在
+        prompt_toolkit 持有终端时写入 rich 输出，导致"你"字被覆盖。
         """
         handler = _get_tab_handler(app)
         if handler is None:
             pytest.skip("Tab 绑定未找到")
         mock_event = MagicMock()
-        handler(mock_event)
-        mock_event.app.run_in_terminal.assert_called_once()
+        with patch("file_agent.cli.run_in_terminal") as mock_rit:
+            handler(mock_event)
+            mock_rit.assert_called_once()
 
     def test_tab_resets_buffer(self, app):
         """Tab 触发后输入缓冲区须被清空，避免 Tab 字符残留在输入框。"""
@@ -261,8 +263,8 @@ class TestTabKeyBinding:
             if handler is None:
                 pytest.skip("Tab 绑定未找到")
             mock_event = MagicMock()
-            mock_event.app.run_in_terminal = MagicMock()  # 阻断回调立即执行
-            handler(mock_event)
+            with patch("file_agent.cli.run_in_terminal"):  # 阻断回调立即执行
+                handler(mock_event)
             # _switch_mode 不应在 handler 同步执行期间被直接调用
             mock_switch.assert_not_called()
 
