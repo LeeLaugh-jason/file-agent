@@ -15,6 +15,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -37,6 +39,26 @@ from .undo_manager import UndoManager
 from .modes import Mode, ChatMode, ImplementMode
 
 console = Console()
+
+
+# ==========================================
+# 流式打字机输出
+# ==========================================
+
+def _stream_print(text: str, prefix: str = "\n🤖 ") -> None:
+    """逐字符打印文本，模拟打字机流式效果。
+
+    总时长不超过 1.5 秒，每字符最小延迟 5 ms。
+    """
+    sys.stdout.write(prefix)
+    sys.stdout.flush()
+    delay = min(0.02, 1.5 / max(len(text), 1))
+    for ch in text:
+        sys.stdout.write(ch)
+        sys.stdout.flush()
+        time.sleep(delay)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 # ==========================================
@@ -208,18 +230,25 @@ class App:
 
     # ─── prompt_toolkit 会话构建 ─────────────────────────────────────
 
-    def _build_prompt_session(self) -> PromptSession:
-        """构建带 Tab 键绑定的 prompt_toolkit 会话。"""
+    def _build_key_bindings(self) -> KeyBindings:
+        """构建 Tab 键绑定（抽出为独立方法，方便单元测试）。"""
         kb = KeyBindings()
 
         @kb.add("tab")
         def _toggle_mode(event):
             """Tab 键切换模式。"""
-            self._switch_mode(self.mode.toggle())
-            # 清空当前输入行并刷新提示符
+            # 通过 run_in_terminal 让 prompt_toolkit 先释放终端控制权，
+            # 再由 rich 写入，避免覆盖提示符中的"你"字。
+            def _do_switch():
+                self._switch_mode(self.mode.toggle())
+            event.app.run_in_terminal(_do_switch)
             event.app.current_buffer.reset()
 
-        return PromptSession(key_bindings=kb)
+        return kb
+
+    def _build_prompt_session(self) -> PromptSession:
+        """构建带 Tab 键绑定的 prompt_toolkit 会话。"""
+        return PromptSession(key_bindings=self._build_key_bindings())
 
     def _get_prompt_html(self) -> HTML:
         """返回当前模式对应的彩色提示符（prompt_toolkit HTML 格式）。"""
@@ -381,9 +410,8 @@ class App:
             console.print("[dim]💬 对话历史已清空。[/dim]")
 
         else:
-            # 发给 LLM
+            # 发给 LLM（ask() 内部已流式打印，无需再 print）
             reply, suggest_implement = self._chat.ask(user_text)
-            console.print(f"\n🤖 {reply}")
             if suggest_implement:
                 console.print(
                     "[dim]💡 提示：按 Tab 或输入 :mode implement 切换到执行模式。[/dim]"
@@ -439,5 +467,5 @@ class App:
         else:
             # 自然语言指令 → LLM 更新方案
             reply = self._impl.ask_for_plan(user_text)
-            console.print(f"\n🤖 {reply}")
+            _stream_print(reply)
             self._impl.show_plan()

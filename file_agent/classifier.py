@@ -287,7 +287,9 @@ def ask_llm_for_plan(
             )
         except BadRequestError as e:
             err_body = str(e)
-            if "413" in err_body or "exceeds" in err_body.lower() or "context length" in err_body.lower():
+            if ("413" in err_body or "超长" in err_body
+                    or "exceeds" in err_body.lower()
+                    or "context length" in err_body.lower()):
                 print(
                     "⚠️  上下文过长，自动裁剪对话历史后重试（仅保留 system + 当前用户指令）..."
                 )

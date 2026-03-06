@@ -107,36 +107,49 @@ class TestChatMode:
         assert chat._history == []
 
     def test_ask_calls_llm_and_returns_reply(self, sample_files, cfg):
-        """Mock LLM 调用，验证 ask() 的协议正确性。"""
+        """Mock 流式 LLM 调用，验证 ask() 返回完整拼接结果。"""
         chat = ChatMode(sample_files, cfg)
 
-        mock_message = MagicMock()
-        mock_message.content = "目录中有 6 个文件。"
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_message)]
+        def _make_chunk(text):
+            delta = MagicMock()
+            delta.content = text
+            choice = MagicMock()
+            choice.delta = delta
+            chunk = MagicMock()
+            chunk.choices = [choice]
+            return chunk
+
+        tokens = ["目录中有", " 6 个", "文件。"]
+        stream_iter = iter([_make_chunk(t) for t in tokens])
 
         with patch("file_agent.modes.chat_mode.OpenAI") as MockOpenAI:
             mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = mock_response
+            mock_client.chat.completions.create.return_value = stream_iter
             MockOpenAI.return_value = mock_client
 
-            reply, suggest = chat.ask("有多少个文件？")
+            reply, _ = chat.ask("有多少个文件？")
 
         assert reply == "目录中有 6 个文件。"
-        assert isinstance(suggest, bool)
 
     def test_ask_detects_implement_suggestion(self, sample_files, cfg):
         """当 LLM 回复中包含 Implement 模式建议时，suggest_implement=True。"""
         chat = ChatMode(sample_files, cfg)
 
-        mock_message = MagicMock()
-        mock_message.content = "建议切换到 Implement 模式 (:mode implement) 来执行整理。"
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_message)]
+        def _make_chunk(text):
+            delta = MagicMock()
+            delta.content = text
+            choice = MagicMock()
+            choice.delta = delta
+            chunk = MagicMock()
+            chunk.choices = [choice]
+            return chunk
+
+        tokens = ["建议切换到 Implement 模式 (:mode implement) 来执行整理。"]
+        stream_iter = iter([_make_chunk(t) for t in tokens])
 
         with patch("file_agent.modes.chat_mode.OpenAI") as MockOpenAI:
             mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = mock_response
+            mock_client.chat.completions.create.return_value = stream_iter
             MockOpenAI.return_value = mock_client
 
             _, suggest = chat.ask("帮我整理这些文件。")
@@ -147,14 +160,21 @@ class TestChatMode:
         """多轮对话时 history 应正确积累。"""
         chat = ChatMode(sample_files, cfg)
 
-        mock_message = MagicMock()
-        mock_message.content = "回复内容"
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock(message=mock_message)]
+        def _make_chunk(text):
+            delta = MagicMock()
+            delta.content = text
+            choice = MagicMock()
+            choice.delta = delta
+            chunk = MagicMock()
+            chunk.choices = [choice]
+            return chunk
 
         with patch("file_agent.modes.chat_mode.OpenAI") as MockOpenAI:
             mock_client = MagicMock()
-            mock_client.chat.completions.create.return_value = mock_response
+            mock_client.chat.completions.create.side_effect = [
+                iter([_make_chunk("回复一")]),
+                iter([_make_chunk("回复二")]),
+            ]
             MockOpenAI.return_value = mock_client
 
             chat.ask("问题一")

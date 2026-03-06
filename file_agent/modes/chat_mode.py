@@ -158,6 +158,7 @@ class ChatMode:
         user_input : str
             用户输入的自然语言问题。
         """
+        import sys
         client = OpenAI(api_key=self.cfg.api_key, base_url=self.cfg.api_base)
 
         # 首次调用时插入 system 消息
@@ -166,15 +167,27 @@ class ChatMode:
 
         self._history.append({"role": "user", "content": user_input})
 
+        reply = ""
         try:
-            response = client.chat.completions.create(
+            sys.stdout.write("\n🤖 ")
+            sys.stdout.flush()
+            stream = client.chat.completions.create(
                 model=self.cfg.model,
                 messages=self._history,
+                stream=True,
             )
-            reply = response.choices[0].message.content or ""
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    sys.stdout.write(delta)
+                    sys.stdout.flush()
+                    reply += delta
+            sys.stdout.write("\n")
+            sys.stdout.flush()
             self._history.append({"role": "assistant", "content": reply})
         except Exception as e:
-            reply = f"[red]LLM 调用失败: {e}[/red]"
+            reply = f"LLM 调用失败: {e}"
+            console.print(f"[red]{reply}[/red]")
 
         # 检测是否建议切换到 Implement 模式
         suggest_implement = (
