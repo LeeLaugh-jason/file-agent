@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from config import AgentConfig
+from .config import AgentConfig
 
 
 @dataclass

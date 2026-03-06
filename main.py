@@ -15,8 +15,8 @@ from __future__ import annotations
 import argparse
 import sys
 
-from config import load_config
-from cli import App
+from file_agent.config import load_config
+from file_agent.cli import App
 
 
 def build_parser() -> argparse.ArgumentParser:

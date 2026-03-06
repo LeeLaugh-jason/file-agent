@@ -25,11 +25,11 @@ from rich.tree import Tree
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich import box
 
-from config import AgentConfig
-from scanner import FileInfo, scan_directories, file_list_paths
-from extractors import enrich_file_list
-from classifier import FilePlan, ask_llm_for_plan
-from executor import MoveRecord, execute_plan, rollback, remove_empty_dirs
+from .config import AgentConfig
+from .scanner import FileInfo, scan_directories, file_list_paths
+from .extractors import enrich_file_list
+from .classifier import FilePlan, ask_llm_for_plan
+from .executor import MoveRecord, execute_plan, rollback, remove_empty_dirs
 
 console = Console()
 

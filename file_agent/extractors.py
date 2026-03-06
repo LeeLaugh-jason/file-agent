@@ -14,8 +14,8 @@ import re
 from pathlib import Path
 from typing import Callable, Dict, List
 
-from config import AgentConfig
-from scanner import FileInfo
+from .config import AgentConfig
+from .scanner import FileInfo
 
 # --------------- 提取器注册表 ---------------
 
