@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Optional, Tuple
 
-from openai import OpenAI
+from openai import OpenAI, BadRequestError
 
 from .config import AgentConfig
 from .scanner import FileInfo, file_list_paths, file_list_metadata
@@ -102,7 +102,18 @@ def build_mcp_registry(
     registry = MCPToolRegistry()
 
     path_list = file_list_paths(files)
-    metadata_list = file_list_metadata(files)
+    # metadata 中 content_summary 截断为 80 字，减少单次 token 消耗
+    # （需要更详细内容时 LLM 可按需调用 mcp_get_file_content）
+    metadata_list = [
+        {
+            "path": fi.rel_path,
+            "ext": fi.ext if fi.ext else "无扩展名",
+            "size_bytes": fi.size_bytes,
+            "modified_at": fi.modified_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "content_summary": fi.content_summary[:80] if fi.content_summary else "",
+        }
+        for fi in files
+    ]
 
     # 建立快速查找映射
     content_map = {fi.rel_path: fi.content_summary for fi in files}
@@ -265,13 +276,34 @@ def ask_llm_for_plan(
 
     final_payload = None
 
+    def _call_api(msgs: list) -> object:
+        """调用 LLM API，遇到 context 超长时自动裁剪 history 重试一次。"""
+        try:
+            return client.chat.completions.create(
+                model=cfg.model,
+                messages=msgs,
+                tools=registry.openai_tools(),
+                tool_choice="auto",
+            )
+        except BadRequestError as e:
+            err_body = str(e)
+            if "413" in err_body or "exceeds" in err_body.lower() or "context length" in err_body.lower():
+                print(
+                    "⚠️  上下文过长，自动裁剪对话历史后重试（仅保留 system + 当前用户指令）..."
+                )
+                system_msgs = [m for m in msgs if m.get("role") == "system"]
+                user_msgs   = [m for m in msgs if m.get("role") == "user"]
+                trimmed = system_msgs + ([user_msgs[-1]] if user_msgs else [])
+                return client.chat.completions.create(
+                    model=cfg.model,
+                    messages=trimmed,
+                    tools=registry.openai_tools(),
+                    tool_choice="auto",
+                )
+            raise
+
     for _ in range(max_rounds):
-        response = client.chat.completions.create(
-            model=cfg.model,
-            messages=messages,
-            tools=registry.openai_tools(),
-            tool_choice="auto",
-        )
+        response = _call_api(messages)
 
         assistant_msg = response.choices[0].message
         tool_calls = assistant_msg.tool_calls or []
