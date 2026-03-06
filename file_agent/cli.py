@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import sys
 import time
+from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application import run_in_terminal
@@ -40,6 +42,87 @@ from .undo_manager import UndoManager
 from .modes import Mode, ChatMode, ImplementMode
 
 console = Console()
+
+
+# ==========================================
+# 分组截断：省略行数据结构与分组逻辑
+# ==========================================
+
+@dataclass
+class _EllipsisRow:
+    """代表被折叠的同类文件，展示时渲染为一行省略提示。
+
+    Attributes
+    ----------
+    count : int
+        被隐藏（折叠）的文件数量。
+    ext : str
+        文件扩展名（含前导点，如 '.jpg'；无扩展名时为空字符串）。
+    target_dir : str
+        目标文件夹名称。
+    """
+
+    count: int
+    ext: str
+    target_dir: str
+
+
+def _group_records_for_display(
+    records: List,
+    max_per_group: int = 5,
+    preview_count: int = 3,
+) -> List[Union["MoveRecord", _EllipsisRow]]:
+    """按 (target_dir, ext) 分组，超出阈值时折叠为省略行。
+
+    同一 (target_dir, ext) 组内文件数超过 ``max_per_group`` 时，
+    只保留前 ``preview_count`` 条，剩余文件用一个 :class:`_EllipsisRow` 代替。
+    各分组独立计算，不同扩展名或不同目标目录的文件互不影响。
+    输入记录的相对顺序在输出中保持不变。
+
+    Parameters
+    ----------
+    records : list[MoveRecord]
+        原始移动记录列表。
+    max_per_group : int
+        触发折叠的阈值：同组文件数 **严格大于** 此值才折叠，默认 5。
+    preview_count : int
+        折叠时保留展示的记录条数（取原始顺序最前面的几条），默认 3。
+
+    Returns
+    -------
+    list[MoveRecord | _EllipsisRow]
+        混合列表：可见的 MoveRecord 按原顺序排列，
+        超出部分在最后一条可见记录之后紧跟一个 _EllipsisRow。
+    """
+    # 按 (target_dir, ext) 收集原始索引，保持插入顺序
+    groups: Dict[tuple, List[int]] = defaultdict(list)
+    for i, r in enumerate(records):
+        ext = Path(r.rel_path).suffix.lower()
+        groups[(r.target_dir, ext)].append(i)
+
+    # 确定哪些索引可见，哪些位置插入省略行
+    visible: set = set()
+    ellipsis_map: Dict[int, _EllipsisRow] = {}  # key = 最后一个可见索引
+
+    for (target_dir, ext), indices in groups.items():
+        if len(indices) > max_per_group:
+            kept = indices[:preview_count]
+            visible.update(kept)
+            hidden = len(indices) - preview_count
+            ellipsis_map[kept[-1]] = _EllipsisRow(
+                count=hidden, ext=ext, target_dir=target_dir
+            )
+        else:
+            visible.update(indices)
+
+    # 按原始顺序输出，在对应位置插入省略行
+    result: List[Union[MoveRecord, _EllipsisRow]] = []
+    for i, r in enumerate(records):
+        if i in visible:
+            result.append(r)
+            if i in ellipsis_map:
+                result.append(ellipsis_map[i])
+    return result
 
 
 # ==========================================
@@ -104,8 +187,33 @@ def show_plan_table(plan: FilePlan, files: List[FileInfo]) -> None:
     console.print(tree)
 
 
-def show_move_results(records: List[MoveRecord], dry_run: bool = False) -> None:
-    """用 rich Table 展示移动结果。"""
+def show_move_results(
+    records: List[MoveRecord],
+    dry_run: bool = False,
+    max_per_group: int = 5,
+    preview_count: int = 3,
+) -> None:
+    """用 rich Table 展示移动结果，大量同类文件时自动折叠。
+
+    同一 (target_dir, ext) 组内文件数超过 ``max_per_group`` 时，
+    只显示前 ``preview_count`` 条，其余用省略行代替。
+    统计行始终显示完整总数，不受折叠影响。
+
+    Parameters
+    ----------
+    records : list[MoveRecord]
+        移动记录列表（dry-run 或实际执行结果均可）。
+    dry_run : bool
+        若为 True，显示「预演结果」标题且统计行提示未修改磁盘。
+    max_per_group : int
+        触发折叠的阈值，默认 5。
+    preview_count : int
+        折叠时保留显示的条数，默认 3。
+    """
+    display_items = _group_records_for_display(
+        records, max_per_group=max_per_group, preview_count=preview_count
+    )
+
     table = Table(
         title="🧪 预演结果" if dry_run else "🚀 执行结果",
         box=box.SIMPLE_HEAVY,
@@ -117,24 +225,34 @@ def show_move_results(records: List[MoveRecord], dry_run: bool = False) -> None:
     table.add_column("目标", max_width=30)
     table.add_column("备注", style="dim", max_width=30)
 
-    for r in records:
-        if r.success is None:
-            status = "[yellow]预演[/yellow]"
-        elif r.success:
-            status = "[green]✅[/green]"
+    for item in display_items:
+        if isinstance(item, _EllipsisRow):
+            ext_hint = item.ext if item.ext else "（无扩展名）"
+            table.add_row(
+                "[dim]…[/dim]",
+                f"[dim]还有 {item.count} 个 {ext_hint} 文件（已折叠）[/dim]",
+                f"[dim]{item.target_dir}[/dim]",
+                "",
+            )
         else:
-            status = "[red]❌[/red]"
+            r = item
+            if r.success is None:
+                status = "[yellow]预演[/yellow]"
+            elif r.success:
+                status = "[green]✅[/green]"
+            else:
+                status = "[red]❌[/red]"
 
-        note = r.error if r.error else ""
-        # 如果发生了重命名，标注新文件名
-        if r.success is not False and r.dst.name != Path(r.rel_path).name:
-            note = f"重命名为: {r.dst.name}"
+            note = r.error if r.error else ""
+            # 如果发生了重命名，标注新文件名
+            if r.success is not False and r.dst.name != Path(r.rel_path).name:
+                note = f"重命名为: {r.dst.name}"
 
-        table.add_row(status, r.rel_path, r.target_dir, note)
+            table.add_row(status, r.rel_path, r.target_dir, note)
 
     console.print(table)
 
-    # 统计
+    # 统计行：总数始终反映完整记录数，不受显示折叠影响
     total = len(records)
     ok = sum(1 for r in records if r.success is True)
     fail = sum(1 for r in records if r.success is False)
@@ -428,6 +546,12 @@ class App:
 
         elif cmd[0] == "/dryrun":
             self._impl.preview()
+            console.print(
+                "\n[dim]💡 下一步操作："
+                "输入 [bold]/run[/bold] 确认执行，"
+                "或用自然语言描述调整方案，"
+                "或输入 [bold]/show[/bold] 查看完整分类方案。[/dim]"
+            )
 
         elif cmd[0] == "/run":
             success, _ = self._impl.execute()
