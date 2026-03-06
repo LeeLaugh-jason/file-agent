@@ -1,0 +1,9 @@
+openai
+rich
+pyyaml
+python-docx
+python-pptx
+pandas
+openpyxl
+pdfplumber
+pytest

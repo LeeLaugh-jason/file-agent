@@ -1,0 +1,32 @@
+# Python 字节码
+__pycache__/
+*.py[cod]
+*.pyo
+
+# pytest 缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 构建产物
+dist/
+build/
+*.egg-info/
+
+# 敏感文件（API 密钥）
+api_key.txt
+.env
+
+# 运行时配置（含本地路径，不提交到版本库）
+config.yaml
+
+# 测试数据目录
+test_folder/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

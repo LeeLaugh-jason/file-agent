@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=67"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "file-agent"
+version = "2.0.0"
+description = "基于 LLM 的智能文件管理 Agent"
+requires-python = ">=3.8"
+dependencies = [
+    "openai",
+    "rich",
+    "pyyaml",
+    "python-docx",
+    "python-pptx",
+    "pandas",
+    "openpyxl",
+    "pdfplumber",
+]
+
+[project.scripts]
+file-agent = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["file_agent*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
