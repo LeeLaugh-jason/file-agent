@@ -1,100 +1,142 @@
-# 文件整理智能助手（file-agent）
+# 🤖 智能文件夹管家 (File-Agent) v2.0
 
-一个基于大模型的本地文件整理脚本：
-- 递归扫描目标目录及子目录文件
-- 根据你的自然语言要求生成分类方案
-- 支持多轮调整方案（先看方案、再执行）
-- 最终执行真实移动，并自动清理空目录
+基于 LLM（GLM-5）的命令行文件分类整理 Agent。通过自然语言指令，自动为文件生成分类方案并执行移动。
 
 > 适合用于课程资料、实验文件、杂乱文档的半自动整理场景。
 
 ---
 
-## 功能特性
+## ✨ 功能特性
 
-- 🤖 **LLM 辅助分类**：通过 GLM-5 生成并迭代文件分类计划
-- 🧭 **多轮对话流程**：可持续输入新要求优化方案
-- 🔍 **递归扫描**：自动收集目标目录所有层级文件
-- 🛡️ **先预览后执行**：先查看计划，确认后再移动
-- 🧹 **自动清理**：移动完成后清理空文件夹
+- **多目录递归扫描**：支持同时扫描多个目录，自动跳过 `.git` 等无关目录
+- **文件内容提取**：支持 `.py`、`.docx`、`.pptx`、`.xlsx`、`.pdf` 等多种格式的内容摘要提取
+- **MCP 工具集**：LLM 通过 Function Calling 获取文件列表、元信息、内容摘要
+- **多轮对话优化**：持续修改分类方案直到满意
+- **Dry-Run 预演**：执行前可预览移动结果
+- **冲突重命名**：目标目录存在同名文件时自动追加后缀
+- **一键回滚**：`/undo` 撤销上次移动
+- **方案导入导出**：`/save` 和 `/load` 支持 JSON 格式
+- **Rich 美化界面**：表格展示分类方案和执行结果
+- **YAML 配置文件**：统一管理 API Key、扫描目录、忽略规则等
 
 ---
 
-## 项目结构
+## 🏗️ 项目架构
 
 ```text
 file-agent/
-├─ file_agent.py        # 主程序
-├─ api_key.txt          # 本地 API Key（请勿提交到公开仓库）
-├─ test_folder/         # 待整理目录
-└─ README.md
+├── main.py          ← 程序入口（argparse CLI）
+├── config.py        ← 配置管理（AgentConfig + YAML 读写）
+├── scanner.py       ← 多目录递归扫描（FileInfo 数据类）
+├── extractors.py    ← 文件内容提取（按扩展名分派）
+├── classifier.py    ← LLM 分类引擎（MCP 工具 + Function Calling）
+├── executor.py      ← 文件移动 / 冲突重命名 / 回滚
+├── cli.py           ← Rich 美化交互界面
+├── config.yaml      ← 配置文件（首次运行自动生成）
+├── tests/           ← 单元测试
+│   ├── test_config.py
+│   ├── test_scanner.py
+│   ├── test_extractors.py
+│   └── test_executor.py
+└── file_agent.py    ← 旧版单文件脚本（保留参考）
+```
+
+### 模块依赖关系
+
+```text
+main.py → cli.py → classifier.py → scanner.py → config.py
+                  → executor.py  → scanner.py
+                  → extractors.py → scanner.py
 ```
 
 ---
 
-## 环境要求
+## 📦 环境要求
 
 - Python 3.8+
-- 依赖：`openai`
 
-安装依赖：
-
-```bash
-pip install openai
-```
-
----
-
-## 配置
-
-程序会从项目根目录读取 `api_key.txt`：
-
-```text
-./api_key.txt
-```
-
-文件内容示例（仅一行）：
-
-```text
-YOUR_API_KEY
-```
-
-`file_agent.py` 中默认配置：
-- `API_KEY_FILE = "./api_key.txt"`
-- `TARGET_FOLDER = "./test_folder"`
-
-可按需修改 `TARGET_FOLDER` 为你的目标目录。
-
----
-
-## 使用方式
-
-在项目根目录运行：
+### 安装依赖
 
 ```bash
-python file_agent.py
+pip install openai python-docx python-pptx pandas openpyxl rich pyyaml
 ```
 
-启动后流程：
-1. 自动扫描 `TARGET_FOLDER` 下所有文件
-2. 生成初始分类方案并展示
-3. 你可继续输入自然语言要求调整方案
-4. 输入命令执行或退出
+可选依赖（PDF 解析）：
 
-交互命令：
-- `/show`：查看当前方案
-- `/run`：执行移动
-- `/exit`：取消并退出（不移动）
+```bash
+pip install pdfplumber
+```
 
 ---
 
-## 示例对话（简化）
+## ⚙️ 配置
 
-```text
-你: 按课程名称分类
-你: 把仿真实验相关文件放到“仿真实验”
-你: /show
-你: /run
+首次运行会自动生成 `config.yaml` 模板。也可手动创建：
+
+```yaml
+# File-Agent 配置文件
+api_key: "<YOUR_API_KEY_HERE>"
+api_base: "https://open.bigmodel.cn/api/paas/v4/"
+model: "glm-5"
+
+scan_dirs:
+  - "./test_folder"
+
+ignore_dirs:
+  - ".git"
+  - "__pycache__"
+  - "node_modules"
+
+ignore_extensions: []
+
+max_content_chars: 500
+dry_run: false
+```
+
+**API Key 读取优先级**（从高到低）：
+1. 环境变量 `FILE_AGENT_API_KEY`
+2. `config.yaml` 中的 `api_key` 字段
+3. 项目根目录下的 `api_key.txt` 文件（旧版兼容）
+
+---
+
+## 🚀 使用方式
+
+### 基本用法
+
+```bash
+python main.py
+```
+
+### 命令行参数
+
+```bash
+python main.py --dirs folder1 folder2    # 指定多个扫描目录
+python main.py --dry-run                 # 强制预演模式
+python main.py --config my.yaml          # 指定配置文件
+python main.py --no-extract              # 跳过内容提取（加速）
+```
+
+### 交互命令
+
+| 命令 | 说明 |
+|------|------|
+| `/show` | 查看当前分类方案 |
+| `/dryrun` | 预演移动（不修改文件） |
+| `/run` | 执行移动 |
+| `/undo` | 撤销上次移动 |
+| `/save [file]` | 导出方案为 JSON（默认 plan.json） |
+| `/load [file]` | 从 JSON 加载方案 |
+| `/help` | 显示帮助 |
+| `/exit` | 退出 |
+| 其他文本 | 作为自然语言指令更新方案 |
+
+---
+
+## 🧪 运行测试
+
+```bash
+python -m pytest tests/ -v
 ```
 
 ---
@@ -102,17 +144,7 @@ python file_agent.py
 ## 安全与开源注意事项
 
 - **不要在公开仓库提交真实密钥**。
-- 建议将 `api_key.txt` 加入 `.gitignore`。
-- 若密钥曾泄露，请立即在平台后台重置（Rotate）密钥。
-
----
-
-## 可改进方向
-
-- 增加“仅模拟执行（dry-run）”模式
-- 处理重名文件冲突策略（重命名/跳过/覆盖可选）
-- 增加日志输出与回滚能力
-- 支持配置文件（如 `config.json`）
+- 建议将 `api_key.txt` 和 `config.yaml` 加入 `.gitignore`。
 
 ---
 

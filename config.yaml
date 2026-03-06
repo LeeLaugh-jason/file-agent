@@ -1,0 +1,21 @@
+# File-Agent 配置文件
+# 详细说明见 README.md
+#
+# api_key: 填入你的 API Key，或设置环境变量 FILE_AGENT_API_KEY
+#          也可以继续使用旧版 api_key.txt
+
+api_key: ''
+api_base: https://open.bigmodel.cn/api/paas/v4/
+model: glm-5
+scan_dirs:
+- ./test_folder
+ignore_dirs:
+- .git
+- __pycache__
+- node_modules
+- .venv
+- venv
+- .idea
+ignore_extensions: []
+max_content_chars: 500
+dry_run: false
