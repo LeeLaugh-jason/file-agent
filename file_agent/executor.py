@@ -18,7 +18,8 @@ from typing import Dict, List, Optional
 
 from .config import AgentConfig
 from .scanner import FileInfo
-from .classifier import FilePlan
+from .types import FilePlan
+from .plan_validation import is_safe_target_dir_name
 
 
 @dataclass
@@ -96,6 +97,17 @@ def execute_plan(
                 target_dir=target_dir_name,
                 success=False,
                 error="文件未在扫描结果中找到",
+            ))
+            continue
+
+        if not is_safe_target_dir_name(target_dir_name):
+            records.append(MoveRecord(
+                src=fi.path,
+                dst=fi.path,
+                rel_path=rel_path,
+                target_dir=target_dir_name,
+                success=False,
+                error="非法目标目录名",
             ))
             continue
 
