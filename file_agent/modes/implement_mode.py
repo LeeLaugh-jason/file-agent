@@ -18,7 +18,8 @@ from rich.panel import Panel
 
 from ..config import AgentConfig
 from ..scanner import FileInfo
-from ..classifier import FilePlan, ask_llm_for_plan, normalize_plan
+from ..types import FilePlan
+from ..classifier import ask_llm_for_plan, normalize_plan
 from ..executor import MoveRecord, execute_plan, rollback, remove_empty_dirs
 from ..undo_manager import UndoManager
 

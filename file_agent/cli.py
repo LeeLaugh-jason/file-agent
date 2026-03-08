@@ -36,7 +36,9 @@ from rich import box
 from .config import AgentConfig
 from .scanner import FileInfo, scan_directories, file_list_paths
 from .extractors import enrich_file_list
-from .classifier import FilePlan, ask_llm_for_plan
+from .types import FilePlan
+from .classifier import ask_llm_for_plan
+from .plan_validation import validate_loaded_plan
 from .executor import MoveRecord, execute_plan, rollback, remove_empty_dirs
 from .undo_manager import UndoManager
 from .modes import Mode, ChatMode, ImplementMode
@@ -284,7 +286,7 @@ def save_plan_json(plan: FilePlan, path: str) -> None:
     console.print(f"[green]✅ 方案已保存到: {path}[/green]")
 
 
-def load_plan_json(path: str) -> Optional[FilePlan]:
+def load_plan_json(path: str, files: List[FileInfo]) -> Optional[FilePlan]:
     """从 JSON 文件加载方案。"""
     p = Path(path)
     if not p.is_file():
@@ -293,11 +295,18 @@ def load_plan_json(path: str) -> Optional[FilePlan]:
     try:
         with open(p, "r", encoding="utf-8") as f:
             plan = json.load(f)
-        if not isinstance(plan, dict):
-            console.print("[red]❌ JSON 格式不正确，需要是一个对象[/red]")
+        valid_keys = {fi.rel_path for fi in files}
+        validated, errors = validate_loaded_plan(plan, valid_keys)
+        if errors:
+            summary = "；".join(errors[:5])
+            if len(errors) > 5:
+                summary += f"；以及其他 {len(errors)-5} 项"
+            console.print(f"[red]❌ 方案校验失败: {summary}[/red]")
             return None
-        console.print(f"[green]✅ 已加载方案: {path} ({len(plan)} 个文件)[/green]")
-        return plan
+
+        assert validated is not None
+        console.print(f"[green]✅ 已加载方案: {path} ({len(validated)} 个文件)[/green]")
+        return validated
     except Exception as e:
         console.print(f"[red]❌ 加载失败: {e}[/red]")
         return None
@@ -580,7 +589,7 @@ class App:
 
         elif cmd[0] == "/load":
             path = cmd[1] if len(cmd) > 1 else "plan.json"
-            loaded = load_plan_json(path)
+            loaded = load_plan_json(path, self.files)
             if loaded is not None:
                 self._impl.plan = loaded
                 self._impl.show_plan()

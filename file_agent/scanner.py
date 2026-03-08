@@ -33,6 +33,31 @@ def _should_ignore_dir(dir_name: str, ignore_dirs: List[str]) -> bool:
     return dir_name in ignore_dirs
 
 
+
+
+def _normalize_rel_dir_path(path_str: str) -> str:
+    """将相对目录路径规范化为 posix 风格、无首尾斜杠。"""
+    normalized = str(Path(path_str)).replace('\\', '/')
+    return normalized.strip().strip('/')
+
+
+def _should_ignore_dirpath(rel_dir: Path, ignore_dir_paths: List[str]) -> bool:
+    """按相对路径匹配是否应忽略目录（支持单级或多级路径）。"""
+    if not ignore_dir_paths:
+        return False
+
+    rel_norm = _normalize_rel_dir_path(str(rel_dir))
+    if not rel_norm:
+        return False
+
+    for pattern in ignore_dir_paths:
+        pat_norm = _normalize_rel_dir_path(pattern)
+        if not pat_norm:
+            continue
+        if rel_norm == pat_norm or rel_norm.startswith(f"{pat_norm}/"):
+            return True
+    return False
+
 def _should_ignore_file(filename: str, ignore_extensions: List[str]) -> bool:
     """判断某个文件是否应被忽略（按扩展名）。"""
     if not ignore_extensions:
@@ -67,11 +92,17 @@ def scan_directories(roots: List[str], cfg: AgentConfig) -> List[FileInfo]:
         root_label = root_path.name  # 用目录名作为前缀标识
 
         for dirpath, dirnames, filenames in os.walk(str(root_path)):
+            current_dir = Path(dirpath)
             # 原地修改 dirnames 以跳过忽略目录
-            dirnames[:] = [
-                d for d in dirnames
-                if not _should_ignore_dir(d, cfg.ignore_dirs)
-            ]
+            filtered: List[str] = []
+            for d in dirnames:
+                if _should_ignore_dir(d, cfg.ignore_dirs):
+                    continue
+                rel_dir = (current_dir / d).resolve().relative_to(root_path)
+                if _should_ignore_dirpath(rel_dir, cfg.ignore_dir_paths):
+                    continue
+                filtered.append(d)
+            dirnames[:] = filtered
 
             for filename in filenames:
                 if _should_ignore_file(filename, cfg.ignore_extensions):

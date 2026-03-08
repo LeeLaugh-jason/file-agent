@@ -87,6 +87,10 @@ ignore_dirs:
   - "__pycache__"
   - "node_modules"
 
+# 按相对扫描根的路径忽略目录树（可选）
+ignore_dir_paths:
+  - "datasets/raw"
+
 ignore_extensions: []
 
 max_content_chars: 500

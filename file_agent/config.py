@@ -41,6 +41,7 @@ class AgentConfig:
     # 扫描相关
     scan_dirs: List[str] = field(default_factory=lambda: ["./test_folder"])
     ignore_dirs: List[str] = field(default_factory=lambda: list(_DEFAULT_IGNORE_DIRS))
+    ignore_dir_paths: List[str] = field(default_factory=list)
     ignore_extensions: List[str] = field(default_factory=lambda: list(_DEFAULT_IGNORE_EXTENSIONS))
 
     # 内容提取

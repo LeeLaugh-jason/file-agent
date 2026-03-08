@@ -17,9 +17,7 @@ from openai import OpenAI, BadRequestError, APIConnectionError
 
 from .config import AgentConfig
 from .scanner import FileInfo, file_list_paths, file_list_metadata
-
-# 类型别名
-FilePlan = Dict[str, str]  # {相对路径: 目标文件夹名}
+from .types import FilePlan
 
 
 # ==========================================

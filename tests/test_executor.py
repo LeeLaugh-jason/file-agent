@@ -2,8 +2,11 @@
 单元测试 ─ executor.py
 """
 
+import importlib
 import shutil
+import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -119,6 +122,35 @@ class TestExecutePlan:
         cfg = AgentConfig(scan_dirs=[str(root)])
         records = execute_plan({"ghost.txt": "X"}, [fi], cfg, dry_run=False)
         assert records[0].success is False
+
+
+
+    @pytest.mark.parametrize("target_dir", ["../x", "a/b", "/tmp/evil", "..", ""])
+    def test_rejects_unsafe_target_dir_dry_run(self, tmp_path, target_dir):
+        root, files = _make_files(tmp_path)
+        cfg = AgentConfig(scan_dirs=[str(root)])
+        records = execute_plan({"a.txt": target_dir}, [files[0]], cfg, dry_run=True)
+        assert len(records) == 1
+        assert records[0].success is False
+        assert "非法目标目录名" in records[0].error
+        assert (root / "a.txt").exists()
+
+    @pytest.mark.parametrize("target_dir", ["../x", "a/b", "/tmp/evil", "..", ""])
+    def test_rejects_unsafe_target_dir_real_run(self, tmp_path, target_dir):
+        root, files = _make_files(tmp_path)
+        cfg = AgentConfig(scan_dirs=[str(root)])
+        records = execute_plan({"a.txt": target_dir}, [files[0]], cfg, dry_run=False)
+        assert len(records) == 1
+        assert records[0].success is False
+        assert "非法目标目录名" in records[0].error
+        assert (root / "a.txt").exists()
+
+
+class TestExecutorImportIndependence:
+    def test_executor_importable_without_openai(self):
+        with patch.dict(sys.modules, {"openai": None}):
+            mod = importlib.reload(importlib.import_module("file_agent.executor"))
+        assert hasattr(mod, "execute_plan")
 
 
 class TestRollback:

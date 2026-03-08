@@ -20,6 +20,7 @@ class TestAgentConfigDefaults:
         assert cfg.max_content_chars == 500
         assert cfg.dry_run is False
         assert ".git" in cfg.ignore_dirs
+        assert cfg.ignore_dir_paths == []
 
     def test_custom_values(self):
         cfg = AgentConfig(api_key="test-key", model="gpt-4", dry_run=True)
@@ -36,6 +37,7 @@ class TestLoadSaveConfig:
             model="glm-5",
             scan_dirs=["./a", "./b"],
             ignore_dirs=[".git"],
+            ignore_dir_paths=["datasets/raw"],
             max_content_chars=1000,
         )
         save_config(original, cfg_path)
@@ -44,6 +46,7 @@ class TestLoadSaveConfig:
         assert loaded.model == "glm-5"
         assert loaded.scan_dirs == ["./a", "./b"]
         assert loaded.max_content_chars == 1000
+        assert loaded.ignore_dir_paths == ["datasets/raw"]
         # api_key 不应被直接写入（安全）
         assert loaded.api_key != "my-secret-key"
 
