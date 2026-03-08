@@ -107,3 +107,56 @@ class TestHelpers:
         assert meta[0]["ext"] == ".py"
         assert meta[0]["size_bytes"] == 100
         assert "hello" in meta[0]["content_summary"]
+
+
+class TestIgnoreDirPaths:
+    def _make_dataset_tree(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir(parents=True)
+
+        (root / "datasets" / "raw").mkdir(parents=True)
+        (root / "datasets" / "raw" / "dup1.csv").write_text("x", encoding="utf-8")
+        (root / "datasets" / "raw" / "dup2.csv").write_text("x", encoding="utf-8")
+
+        (root / "datasets" / "processed").mkdir(parents=True)
+        (root / "datasets" / "processed" / "keep.csv").write_text("y", encoding="utf-8")
+
+        (root / "notes").mkdir(parents=True)
+        (root / "notes" / "todo.txt").write_text("todo", encoding="utf-8")
+
+        return root
+
+    def test_ignore_nested_dir_path(self, tmp_path):
+        root = self._make_dataset_tree(tmp_path)
+        cfg = AgentConfig(ignore_dir_paths=["datasets/raw"])
+
+        files = scan_directories([str(root)], cfg)
+        paths = [fi.rel_path for fi in files]
+
+        assert not any("datasets/raw" in p.replace("\\", "/") for p in paths)
+        assert any("datasets/processed/keep.csv" in p.replace("\\", "/") for p in paths)
+        assert any("notes/todo.txt" in p.replace("\\", "/") for p in paths)
+
+    def test_multi_root_applies_ignore_per_root(self, tmp_path):
+        root1 = self._make_dataset_tree(tmp_path / "r1")
+        root2 = self._make_dataset_tree(tmp_path / "r2")
+        cfg = AgentConfig(ignore_dir_paths=["datasets/raw"])
+
+        files = scan_directories([str(root1), str(root2)], cfg)
+        paths = [fi.rel_path.replace("\\", "/") for fi in files]
+
+        assert not any("datasets/raw" in p for p in paths)
+        assert any(p.endswith("datasets/processed/keep.csv") for p in paths)
+
+    def test_ignore_dirs_and_ignore_dir_paths_can_coexist(self, tmp_path):
+        root = self._make_dataset_tree(tmp_path)
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "pkg.json").write_text("{}", encoding="utf-8")
+
+        cfg = AgentConfig(ignore_dirs=["node_modules"], ignore_dir_paths=["datasets/raw"])
+        files = scan_directories([str(root)], cfg)
+        paths = [fi.rel_path.replace("\\", "/") for fi in files]
+
+        assert not any("datasets/raw" in p for p in paths)
+        assert not any("node_modules" in p for p in paths)
+        assert any("datasets/processed/keep.csv" in p for p in paths)
